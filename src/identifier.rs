@@ -104,9 +104,10 @@ impl Identifier {
 /// ```
 #[macro_export]
 macro_rules! ident {
-    ($value:literal) => {
-        const { $crate::identifier::Identifier::new($value) }
-    };
+    ($value:literal) => {{
+        const IDENT: $crate::identifier::Identifier = $crate::identifier::Identifier::new($value);
+        IDENT
+    }};
 }
 
 impl Add for Identifier {
