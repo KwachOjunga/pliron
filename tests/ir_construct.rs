@@ -24,6 +24,7 @@ use pliron::{
     },
     ident,
     irfmt::parsers::spaced,
+    linked_list::ContainsLinkedList,
     op::{Op, verify_op},
     operation::{DefUseVerifyErr, Operation, verify_operation},
     parsable::parse_from_str,
@@ -51,7 +52,7 @@ fn construct_and_erase() -> Result<()> {
 // Ensure that erasing an op with uses panics.
 #[test]
 #[cfg_attr(target_family = "wasm", wasm_bindgen_test)]
-#[should_panic]
+#[should_panic(expected = "with use")]
 fn removed_used_op() {
     let ctx = &mut Context::new();
 
@@ -60,6 +61,81 @@ fn removed_used_op() {
 
     // const_op is used in the return. Erasing it must panic.
     Operation::erase(const_op.get_operation(), ctx);
+}
+
+// Ensure that erasing a block whose argument has uses outside the block panics.
+#[test]
+#[cfg_attr(target_family = "wasm", wasm_bindgen_test)]
+#[should_panic(expected = "has use outside the block")]
+fn erase_block_with_used_argument() {
+    let input = r#"
+        builtin.module @bar {
+        ^module_block():
+            builtin.func @foo:
+                builtin.function <(builtin.integer si64) -> (builtin.integer si64)> {
+            ^entry(arg: builtin.integer si64):
+                test.branch () [^exit] []: <() -> ()>
+            ^exit():
+                test.return arg
+            }
+        }"#;
+
+    let ctx = &mut Context::new();
+    let module = parse_from_str(spaced(Operation::top_level_parser()), ctx, input).unwrap();
+
+    // Initial IR must be completely valid and verified before erase.
+    verify_operation(module, ctx).expect("IR should be valid");
+
+    let module_op = Operation::get_op::<pliron::builtin::ops::ModuleOp>(module, ctx).unwrap();
+    let func = module_op
+        .get_body(ctx, 0)
+        .deref(ctx)
+        .iter(ctx)
+        .next()
+        .unwrap();
+    let func_op = Operation::get_op::<pliron::builtin::ops::FuncOp>(func, ctx).unwrap();
+    let entry = func_op.get_entry_block(ctx);
+
+    // This must panic.
+    BasicBlock::erase(entry, ctx);
+}
+
+// Ensure that erasing a block which contains an op whose result has uses
+// outside the block panics.
+#[test]
+#[cfg_attr(target_family = "wasm", wasm_bindgen_test)]
+#[should_panic(expected = "with use outside the block")]
+fn erase_block_with_used_op_result() {
+    let input = r#"
+        builtin.module @bar {
+        ^module_block():
+            builtin.func @foo: builtin.function <() -> (builtin.integer si64)> {
+            ^entry():
+                c0 = test.constant builtin.integer <0: si64>;
+                test.branch () [^exit] []: <() -> ()>
+            ^exit():
+                test.return c0
+            }
+        }"#;
+
+    let ctx = &mut Context::new();
+    let module = parse_from_str(spaced(Operation::top_level_parser()), ctx, input).unwrap();
+
+    // Initial IR must be completely valid and verified before erase.
+    verify_operation(module, ctx).expect("IR should be valid");
+
+    let module_op = Operation::get_op::<pliron::builtin::ops::ModuleOp>(module, ctx).unwrap();
+    let func = module_op
+        .get_body(ctx, 0)
+        .deref(ctx)
+        .iter(ctx)
+        .next()
+        .unwrap();
+    let func_op = Operation::get_op::<pliron::builtin::ops::FuncOp>(func, ctx).unwrap();
+    let entry = func_op.get_entry_block(ctx);
+
+    // This must panic.
+    BasicBlock::erase(entry, ctx);
 }
 
 // Testing replacing all uses of c0 with c1.
