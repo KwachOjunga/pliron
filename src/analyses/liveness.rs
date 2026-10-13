@@ -856,6 +856,7 @@ mod tests {
     /// - operand 1 is read on entry and after the exit region (it flows nowhere).
     /// - operand 2 is the initial value of body argument 1.
     ///   The op reads it again on the back edge.
+    /// - The back edge also lists operand 0 of the body's tail terminator as a read.
     /// - The body's tail terminator passes its two operands back to the body arguments,
     ///   or enters the exit region.
     /// - The exit region's tail terminator exits the op.
@@ -924,7 +925,10 @@ mod tests {
                     from: RegionBranchPoint::Terminator(terminator),
                     to: RegionSuccessor::Region(body),
                     flows: flows_from(terminator, [0, 1]),
-                    reads: vec![op.deref(ctx).get_operand_as_use(2)],
+                    reads: vec![
+                        op.deref(ctx).get_operand_as_use(2),
+                        terminator.deref(ctx).get_operand_as_use(0),
+                    ],
                 },
                 RegionEdge {
                     from: RegionBranchPoint::Terminator(terminator),
@@ -1032,7 +1036,7 @@ mod tests {
             ctx,
             BrOp::get_concrete_op_info(),
             vec![],
-            body_args,
+            body_args.clone(),
             vec![],
             0,
         );
@@ -1057,7 +1061,7 @@ mod tests {
         );
         assert_eq!(
             read_values(branch.operands_read_from(ctx, RegionBranchPoint::Terminator(terminator))),
-            vec![reread_init]
+            vec![reread_init, body_args[0]]
         );
         assert_eq!(
             read_values(branch.operands_read_to(ctx, RegionSuccessor::After)),
@@ -1065,7 +1069,7 @@ mod tests {
         );
         assert_eq!(
             read_values(branch.operands_read_from_region(ctx, loop_op.deref(ctx).get_region(0))),
-            vec![reread_init]
+            vec![reread_init, body_args[0]]
         );
 
         let start = OpInsertionPoint::AtBlockStart(body);

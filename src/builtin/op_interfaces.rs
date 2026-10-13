@@ -247,8 +247,10 @@ pub struct RegionEdge {
     ///   - an entry block argument of the [Self::to] region, or
     ///   - a result of the [Self::to] op.
     pub flows: Vec<(Use<Value>, Value)>,
-    /// Operands of the [RegionBranchOpInterface] op that it can read on this edge,
-    /// before control reaches [Self::to].
+    /// Operands that can be read on this edge, before control reaches [Self::to].
+    /// Each operand belongs to either:
+    /// - the operation at [Self::from], or
+    /// - the [RegionBranchOpInterface] op.
     pub reads: Vec<Use<Value>>,
 }
 
@@ -347,8 +349,10 @@ pub enum RegionBranchOpInterfaceVerifyErr {
         "region_edges must pass operands to receivers of the same type, but {operand} flows into {receiver}"
     )]
     FlowTypeMismatch { operand: String, receiver: String },
-    #[error("region_edges must only list operands of the op itself as reads")]
-    ReadNotOpOperand,
+    #[error(
+        "region_edges must only list operands of the op itself, or of the operation at the edge's source, as reads"
+    )]
+    ReadNotOpOrSourceOperand,
     #[error("region_edges must pass operands to the same receivers on all edges into a successor")]
     ReceiverSetMismatch,
 }
@@ -361,9 +365,9 @@ pub enum RegionBranchOpInterfaceVerifyErr {
 /// - [Self::region_edges] lists all control-flow edges of the op:
 ///   into, out of, and between its regions.
 /// - An edge
-///   - pairs operands (of this op, or of a terminator in its regions)
+///   - pairs operands of its source (this op, or a terminator in its regions)
 ///     with their receiver values ([RegionEdge::flows]). The types must match.
-///   - lists operands of this op that this op can read
+///   - lists operands (of this op, or of its source) that can be read
 ///     ([RegionEdge::reads]) when control takes the edge.
 /// - All edges into the same successor have the same receivers.
 ///
@@ -400,7 +404,7 @@ pub trait RegionBranchOpInterface {
             .collect()
     }
 
-    /// Get the operands of this op that are read on edges from `point`.
+    /// Get the operands that are read on edges from `point`.
     fn operands_read_from(&self, ctx: &Context, point: RegionBranchPoint) -> Vec<Use<Value>> {
         let mut reads = Vec::new();
         for operand in self
@@ -415,7 +419,7 @@ pub trait RegionBranchOpInterface {
         reads
     }
 
-    /// Get the operands of this op that are read on edges to `successor`.
+    /// Get the operands that are read on edges to `successor`.
     fn operands_read_to(&self, ctx: &Context, successor: RegionSuccessor) -> Vec<Use<Value>> {
         let mut reads = Vec::new();
         for operand in self
@@ -430,7 +434,7 @@ pub trait RegionBranchOpInterface {
         reads
     }
 
-    /// Get the operands of this op that are read on edges from terminators in `region`.
+    /// Get the operands that are read on edges from terminators in `region`.
     fn operands_read_from_region(&self, ctx: &Context, region: Ptr<Region>) -> Vec<Use<Value>> {
         let mut reads = Vec::new();
         for edge in self.region_edges(ctx) {
@@ -547,7 +551,7 @@ pub trait RegionBranchOpInterface {
                 // We're seeing this region successor for the first time.
                 None => successor_receivers.push((edge.to, receivers)),
             }
-            // The operation that owns the flow operands of this edge.
+            // The operation at the source of this edge.
             let source = match edge.from {
                 RegionBranchPoint::Parent => this,
                 RegionBranchPoint::Terminator(terminator) => {
@@ -563,8 +567,16 @@ pub trait RegionBranchOpInterface {
                     terminator
                 }
             };
-            if edge.reads.iter().any(|operand| operand.user_op() != this) {
-                return verify_err!(loc, RegionBranchOpInterfaceVerifyErr::ReadNotOpOperand);
+            // The read operands must belong to the source or to this op.
+            if edge
+                .reads
+                .iter()
+                .any(|operand| operand.user_op() != this && operand.user_op() != source)
+            {
+                return verify_err!(
+                    loc,
+                    RegionBranchOpInterfaceVerifyErr::ReadNotOpOrSourceOperand
+                );
             }
             if let RegionSuccessor::Region(region) = edge.to
                 && region.deref(ctx).get_parent_op() != this
@@ -576,6 +588,7 @@ pub trait RegionBranchOpInterface {
             }
             let mut receivers = Vec::new();
             for (operand, receiver) in &edge.flows {
+                // The flow operands must belong to the source.
                 if operand.user_op() != source {
                     return verify_err!(
                         loc,
