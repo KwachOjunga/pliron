@@ -69,9 +69,13 @@ fn operand_attrs(op: Ptr<Operation>, ctx: &Context, state: &SccpState) -> Vec<Op
             Constness::Constant { val } => Some(val.clone()),
             Constness::NotAConstant => None,
             Constness::Undetermined => {
-                // This means `v` was defined in a scope outside of the root operation
-                // we're applying sccp to. These variables aren't really Undetermined;
-                // we just never added them to the state.
+                assert!(
+                    !v.get_parent_region(ctx)
+                        .unwrap()
+                        .deref(ctx)
+                        .has_ssa_dominance(ctx),
+                    "SCCP must process a definition before its uses in an SSA dominance region"
+                );
                 None
             }
         })
@@ -174,7 +178,12 @@ fn process_val(val: Value, ctx: &Context, state: &mut SccpState) {
             .deref(ctx)
             .get_parent_block()
             .expect("ops that use values have parents");
-        if matches!(state.get_block_state(user_block), BlockState::Reachable) {
+        // Only process ops in reachable blocks.
+        // Ops whose blocks are already on the queue for processing are skipped.
+        // Such ops may have unprocessed (`Constness::Undetermined`) operands.
+        if matches!(state.get_block_state(user_block), BlockState::Reachable)
+            && !state.is_block_pending(user_block)
+        {
             process_op(user, ctx, state);
         }
     }
